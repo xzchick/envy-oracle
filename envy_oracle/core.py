@@ -436,6 +436,30 @@ def score(source, secret, now=None, tag=None):
             "brier_reference": 0.25}
 
 
+def due(source, secret, now=None, within_days=None):
+    """Open predictions that have a resolve-by date, soonest first, flagging overdue
+    ones. With `within_days`, only those due within that many days (overdue always
+    included). Read-only."""
+    data, _ = _load(source, secret)
+    moment = _parse_utc(now) if now else datetime.datetime.now(datetime.timezone.utc)
+    rows = []
+    for p in data["predictions"]:
+        if p["resolved"] or not p["due_utc"]:
+            continue
+        due_dt = _parse_utc(p["due_utc"])
+        days = int((due_dt - moment).total_seconds() // 86400) if due_dt >= moment \
+            else -int((moment - due_dt).total_seconds() // 86400)
+        if within_days is not None and days > within_days:
+            continue
+        rows.append({"id": p["id"], "statement": p["statement"], "confidence": p["confidence"],
+                     "due_utc": p["due_utc"], "days": days, "overdue": due_dt < moment, "tags": p["tags"]})
+    rows.sort(key=lambda r: (r["due_utc"], r["id"]))
+    return {"oracle_id": data["oracle_id"], "title": data["title"], "evaluated_utc": moment.isoformat(),
+            "due": rows, "count": len(rows), "overdue": sum(1 for r in rows if r["overdue"]),
+            "basis": "Open predictions with a resolve-by date you set. A due date is a reminder, not an "
+                     "enforcement, and times are assertions from your clock."}
+
+
 def tags(source, secret):
     """Every tag in use, with how many predictions carry each. Read-only."""
     data, _ = _load(source, secret)

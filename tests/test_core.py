@@ -261,6 +261,29 @@ class OracleTest(unittest.TestCase):
         data, _ = core._load(src, self.SECRET)
         return data["predictions"][-1]["id"]
 
+    # ----- due listing (v0.2) ------------------------------------------
+    def _at(self, days):
+        return (self.base + datetime.timedelta(days=days)).isoformat()
+
+    def test_due_lists_and_flags_overdue_sorted(self):
+        p = self.oracle()
+        p1 = self.seq(); core.add_prediction(p, p1, self.SECRET, "past one", 60, due_utc=self._at(5))
+        p2 = self.seq(); core.add_prediction(p1, p2, self.SECRET, "future one", 70, due_utc=self._at(40))
+        p3 = self.seq(); core.add_prediction(p2, p3, self.SECRET, "no due", 50)   # no due date
+        rep = core.due(p3, self.SECRET, now=self._at(10))
+        self.assertEqual(rep["count"], 2)
+        self.assertEqual(rep["overdue"], 1)
+        self.assertEqual(rep["due"][0]["statement"], "past one")   # soonest due first
+        self.assertTrue(rep["due"][0]["overdue"])
+        self.assertFalse(rep["due"][1]["overdue"])
+
+    def test_due_within_filter(self):
+        p = self.oracle()
+        p1 = self.seq(); core.add_prediction(p, p1, self.SECRET, "soon", 60, due_utc=self._at(12))
+        p2 = self.seq(); core.add_prediction(p1, p2, self.SECRET, "far", 60, due_utc=self._at(90))
+        rep = core.due(p2, self.SECRET, now=self._at(0), within_days=30)
+        self.assertEqual([r["statement"] for r in rep["due"]], ["soon"])
+
     # ----- calibration reliability diagram (v0.2) ----------------------
     def test_calibration_svg_is_well_formed_with_a_point_per_band(self):
         import xml.etree.ElementTree as ET

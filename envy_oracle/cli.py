@@ -12,7 +12,7 @@ import json
 import sys
 
 from . import __version__
-from .core import (OracleError, add_prediction, check_passphrase, create, export,
+from .core import (OracleError, add_prediction, check_passphrase, create, due, export,
                    inspect, remove_prediction, resolve, score, tags)
 
 
@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     sc = commands.add_parser("score", help="show calibration (read-only; exit 1 if any are overdue)")
     sc.add_argument("oracle")
     sc.add_argument("--tag", default=None, metavar="LABEL", help="only score predictions with this tag")
+
+    dq = commands.add_parser("due", help="list open predictions with a resolve-by date (read-only; exit 1 if overdue)")
+    dq.add_argument("oracle")
+    dq.add_argument("--within", type=int, default=None, metavar="DAYS",
+                    help="only those due within this many days (overdue always shown)")
 
     tg = commands.add_parser("tags", help="list the tags in use and how many predictions carry each")
     tg.add_argument("oracle")
@@ -111,6 +116,15 @@ def _run(args) -> int:
                 print(f"  {b['band']:>7}: {b['count']} preds · you said {b['you_said']}% · "
                       f"actual {b['actual']}% · gap {b['gap']:+}")
         print(f"{rep['open']} open ({rep['overdue']} overdue)")
+        return 0 if rep["overdue"] == 0 else 1
+    if args.command == "due":
+        rep = due(args.oracle, _passphrase(), within_days=args.within)
+        if not rep["due"]:
+            print("No open predictions with a due date." + (f" (within {args.within}d)" if args.within is not None else ""))
+        for r in rep["due"]:
+            when = f"{-r['days']}d overdue" if r["overdue"] else f"in {r['days']}d"
+            print(f"  [{when:>12}] {r['confidence']}%  {r['statement'][:70]}  (due {r['due_utc']})")
+        print(f"{rep['count']} due-dated, {rep['overdue']} overdue")
         return 0 if rep["overdue"] == 0 else 1
     if args.command == "tags":
         result = tags(args.oracle, _passphrase())
