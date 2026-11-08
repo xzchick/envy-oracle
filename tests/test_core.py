@@ -205,6 +205,62 @@ class OracleTest(unittest.TestCase):
             core.add_prediction(p0, dest, self.SECRET, "x", 50)
         self.assertEqual(dest.read_bytes(), b"keep me")
 
+    # ----- tags (v0.2) --------------------------------------------------
+    def test_tags_are_normalized_on_add(self):
+        p0 = self.oracle()
+        p1 = self.seq()
+        core.add_prediction(p0, p1, self.SECRET, "ships Q1", 70, tags=["Security", "security", " Infra "])
+        data, _ = core._load(p1, self.SECRET)
+        self.assertEqual(data["predictions"][0]["tags"], ["infra", "security"])  # lower, dedup, sorted
+
+    def test_tag_rejects_bad_values(self):
+        p0 = self.oracle()
+        for bad in [["  "], ["x" * 41], [5], ["ok"] * 21]:
+            with self.assertRaises(OracleError):
+                core.add_prediction(p0, self.seq(), self.SECRET, "s", 60, tags=bad)
+
+    def test_score_filters_by_tag(self):
+        p = self.oracle()
+        p = self._add(p, "sec call", 80, tags=["security"])
+        pid_sec = self._last_id(p)
+        p = self._add(p, "infra call", 60, tags=["infra"])
+        # Resolve only the security one, correctly.
+        p2 = self.seq(); core.resolve(p, p2, self.SECRET, pid_sec, True)
+        full = core.score(p2, self.SECRET)
+        sec = core.score(p2, self.SECRET, tag="security")
+        self.assertEqual(full["total"], 2)
+        self.assertEqual(sec["total"], 1)
+        self.assertEqual(sec["resolved"], 1)
+        self.assertEqual(sec["tag"], "security")
+        self.assertEqual(core.score(p2, self.SECRET, tag="nope")["total"], 0)
+
+    def test_tags_listing_counts(self):
+        p = self.oracle()
+        p = self._add(p, "a", 60, tags=["security"])
+        p = self._add(p, "b", 60, tags=["security", "infra"])
+        result = core.tags(p, self.SECRET)
+        self.assertEqual(result["tags"], [{"tag": "infra", "count": 1}, {"tag": "security", "count": 2}])
+
+    def test_pre_tags_oracle_migrates_on_load(self):
+        # An oracle whose prediction predates `tags` must still open (migrated to []).
+        p = self.oracle()
+        p = self._add(p, "legacy", 55, tags=["keep"])
+        data, _ = core._load(p, self.SECRET)
+        del data["predictions"][0]["tags"]                      # simulate an old file
+        legacy = self.dir / "legacy.envyoracle"
+        core.new_file(legacy, core.encrypt_bytes(core._canonical(data), self.SECRET))
+        reloaded, _ = core._load(legacy, self.SECRET)           # must not raise
+        self.assertEqual(reloaded["predictions"][0]["tags"], [])
+
+    def _add(self, src, statement, conf, tags=None):
+        dst = self.seq()
+        core.add_prediction(src, dst, self.SECRET, statement, conf, tags=tags)
+        return dst
+
+    def _last_id(self, src):
+        data, _ = core._load(src, self.SECRET)
+        return data["predictions"][-1]["id"]
+
 
 if __name__ == "__main__":
     unittest.main()
