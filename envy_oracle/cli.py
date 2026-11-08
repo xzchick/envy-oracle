@@ -13,7 +13,7 @@ import sys
 
 from . import __version__
 from .core import (OracleError, add_prediction, check_passphrase, create, export,
-                   inspect, remove_prediction, resolve, score)
+                   inspect, remove_prediction, resolve, score, tags)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--statement", required=True, help="what you predict will happen")
     add.add_argument("--confidence", type=int, required=True, metavar="PCT", help="1–99 percent")
     add.add_argument("--due", default=None, metavar="UTC", help="optional resolve-by time (ISO 8601 UTC)")
+    add.add_argument("--tag", action="append", default=None, metavar="LABEL",
+                     help="a tag for this prediction; repeat for several")
 
     res = commands.add_parser("resolve", help="resolve a prediction yes or no (writes a new revision)")
     res.add_argument("oracle")
@@ -53,6 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sc = commands.add_parser("score", help="show calibration (read-only; exit 1 if any are overdue)")
     sc.add_argument("oracle")
+    sc.add_argument("--tag", default=None, metavar="LABEL", help="only score predictions with this tag")
+
+    tg = commands.add_parser("tags", help="list the tags in use and how many predictions carry each")
+    tg.add_argument("oracle")
 
     insp = commands.add_parser("inspect", help="print the decrypted oracle and journal (read-only)")
     insp.add_argument("oracle")
@@ -80,7 +86,7 @@ def _run(args) -> int:
         return 0
     if args.command == "add":
         result = add_prediction(args.oracle, args.destination, _passphrase(), args.statement,
-                                args.confidence, args.due)
+                                args.confidence, args.due, args.tag)
         print(f"prediction added {result['prediction_id']} → {result['output']} (revision {result['revision']})")
         return 0
     if args.command == "resolve":
@@ -93,7 +99,9 @@ def _run(args) -> int:
         print(f"removed {result['removed']} → {result['output']} (revision {result['revision']})")
         return 0
     if args.command == "score":
-        rep = score(args.oracle, _passphrase())
+        rep = score(args.oracle, _passphrase(), tag=args.tag)
+        if args.tag:
+            print(f"tag “{args.tag}” · {rep['total']} prediction(s)")
         if rep["brier"] is None:
             print("No resolved predictions yet — nothing to score.")
         else:
@@ -104,6 +112,13 @@ def _run(args) -> int:
                       f"actual {b['actual']}% · gap {b['gap']:+}")
         print(f"{rep['open']} open ({rep['overdue']} overdue)")
         return 0 if rep["overdue"] == 0 else 1
+    if args.command == "tags":
+        result = tags(args.oracle, _passphrase())
+        if not result["tags"]:
+            print("No tags yet. Add a prediction with --tag.")
+        for row in result["tags"]:
+            print(f"  {row['tag']:<24} {row['count']}")
+        return 0
     if args.command == "export":
         result = export(args.oracle, args.destination, _passphrase(), args.format)
         print(f"export ({result['format']}): wrote {result['output']}  sha256 {result['sha256']}")

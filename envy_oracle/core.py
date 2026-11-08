@@ -163,9 +163,31 @@ def _confidence(value):
 
 # --- Prediction and journal validation ---------------------------------------
 
+MAX_TAGS = 20
+MAX_TAG_LEN = 40
+
+
+def _normalize_tags(tags):
+    """Lower-cased, trimmed, de-duplicated, sorted tags. Non-letters are allowed,
+    but a tag is a short label, not free text."""
+    if tags is None:
+        return []
+    if not isinstance(tags, list) or len(tags) > MAX_TAGS:
+        raise OracleError(f"At most {MAX_TAGS} tags, as a list")
+    out = []
+    for tag in tags:
+        if not isinstance(tag, str):
+            raise OracleError("Each tag must be text")
+        label = tag.strip().lower()
+        if not label or "\x00" in label or len(label) > MAX_TAG_LEN:
+            raise OracleError(f"A tag must be 1 to {MAX_TAG_LEN} characters")
+        out.append(label)
+    return sorted(set(out))
+
+
 def _validate_prediction(value):
     fields = {"id", "statement", "confidence", "created_utc", "due_utc",
-              "resolved", "outcome", "resolved_utc", "note"}
+              "resolved", "outcome", "resolved_utc", "note", "tags"}
     if not isinstance(value, dict) or set(value) != fields:
         raise OracleError("Invalid prediction")
     resolved = value["resolved"]
@@ -189,7 +211,8 @@ def _validate_prediction(value):
             "due_utc": due, "resolved": resolved,
             "outcome": outcome if resolved else None,
             "resolved_utc": resolved_utc if resolved else None,
-            "note": _text(value["note"], "note", MAX_NOTE, allow_empty=True)}
+            "note": _text(value["note"], "note", MAX_NOTE, allow_empty=True),
+            "tags": _normalize_tags(value["tags"])}
 
 
 def _record_digest(record):
@@ -253,13 +276,24 @@ def _validate_oracle(data):
 
 # --- Load / write ------------------------------------------------------------
 
+def _migrate(data):
+    """Bring an older oracle forward in memory. Predictions gained `tags` in v0.2;
+    give any that predate it an empty list so they still validate. The journal is
+    unaffected (predictions are not part of the hash chain)."""
+    if isinstance(data, dict) and isinstance(data.get("predictions"), list):
+        for pred in data["predictions"]:
+            if isinstance(pred, dict) and "tags" not in pred:
+                pred["tags"] = []
+    return data
+
+
 def _load(source, secret):
     encrypted = read_regular(source, MAX_ENVELOPE)
     try:
         data = json.loads(decrypt_bytes(encrypted, secret))
     except (json.JSONDecodeError, UnicodeError, RecursionError):
         raise OracleError("Encrypted oracle does not contain valid JSON") from None
-    return _validate_oracle(data), hashlib.sha256(encrypted).hexdigest()
+    return _validate_oracle(_migrate(data)), hashlib.sha256(encrypted).hexdigest()
 
 
 def _write(destination, data, secret):
@@ -295,14 +329,15 @@ def create(destination, title, secret):
 
 # --- Mutations (each writes a new, preserved revision) -----------------------
 
-def add_prediction(source, destination, secret, statement, confidence, due_utc=None):
+def add_prediction(source, destination, secret, statement, confidence, due_utc=None, tags=None):
     data, envelope = _load(source, secret)
     if len(data["predictions"]) >= MAX_PREDICTIONS:
         raise OracleError(f"An oracle holds at most {MAX_PREDICTIONS} predictions")
     pred = _validate_prediction({"id": str(uuid.uuid4()), "statement": statement,
                                  "confidence": confidence, "created_utc": _utc(),
                                  "due_utc": _timestamp(due_utc) if due_utc else None,
-                                 "resolved": False, "outcome": None, "resolved_utc": None, "note": ""})
+                                 "resolved": False, "outcome": None, "resolved_utc": None,
+                                 "note": "", "tags": tags or []})
     data["predictions"] = sorted(data["predictions"] + [pred], key=lambda p: p["id"])
     _append_event(data, "created", pred["id"], f"{confidence}% — {statement[:120]}")
     result = _save_revision(data, envelope, destination, secret)
@@ -348,12 +383,20 @@ def _is_correct(confidence, outcome):
     return (confidence >= 50) == bool(outcome)
 
 
-def score(source, secret, now=None):
-    """Measure calibration over resolved predictions. Read-only."""
+def score(source, secret, now=None, tag=None):
+    """Measure calibration over resolved predictions. Read-only.
+
+    With `tag`, the analysis is restricted to predictions carrying that tag, so
+    you can ask "how calibrated am I on *security* calls?" on its own.
+    """
     data, _ = _load(source, secret)
     moment = _parse_utc(now) if now else datetime.datetime.now(datetime.timezone.utc)
-    resolved = [p for p in data["predictions"] if p["resolved"]]
-    open_preds = [p for p in data["predictions"] if not p["resolved"]]
+    preds = data["predictions"]
+    if tag is not None:
+        tag = tag.strip().lower()
+        preds = [p for p in preds if tag in p["tags"]]
+    resolved = [p for p in preds if p["resolved"]]
+    open_preds = [p for p in preds if not p["resolved"]]
     overdue = [p for p in open_preds if p["due_utc"] and _parse_utc(p["due_utc"]) < moment]
 
     brier = correct = None
@@ -383,14 +426,25 @@ def score(source, secret, now=None):
                          "gap": round(actual - you_said, 1)})
     accuracy = round(100.0 * correct / len(resolved), 1) if resolved else None
     return {"oracle_id": data["oracle_id"], "title": data["title"], "revision": data["revision"],
-            "evaluated_utc": moment.isoformat(),
-            "total": len(data["predictions"]), "resolved": len(resolved), "open": len(open_preds),
+            "evaluated_utc": moment.isoformat(), "tag": tag,
+            "total": len(preds), "resolved": len(resolved), "open": len(open_preds),
             "overdue": len(overdue), "correct": correct, "accuracy_pct": accuracy, "brier": brier,
-            "bins": bins, "predictions": _rows(data["predictions"], moment),
+            "bins": bins, "predictions": _rows(preds, moment),
             "basis": "The Oracle scores the confidence you stated against the outcomes you resolved — it does "
                      "not foretell anything. Calibration needs volume to mean much, and you resolve your own "
                      "predictions. A Brier score of 0.25 is what always saying 50% earns; lower is better.",
             "brier_reference": 0.25}
+
+
+def tags(source, secret):
+    """Every tag in use, with how many predictions carry each. Read-only."""
+    data, _ = _load(source, secret)
+    counts = {}
+    for p in data["predictions"]:
+        for tag in p["tags"]:
+            counts[tag] = counts.get(tag, 0) + 1
+    return {"oracle_id": data["oracle_id"], "title": data["title"],
+            "tags": [{"tag": tag, "count": counts[tag]} for tag in sorted(counts)]}
 
 
 def _rows(predictions, moment):
