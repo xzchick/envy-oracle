@@ -186,6 +186,7 @@ def _build():
                                            ("Add prediction", self.add_prediction, "go"),
                                            ("Resolve yes", self.resolve_yes, "go"),
                                            ("Resolve no", self.resolve_no, "pick"),
+                                           ("Copy id", self.copy_prediction_id, "pick"),
                                            ("Remove", self.remove_prediction, "pick"),
                                            ("Export", self.export_report, "pick")):
                 b = QPushButton(caption); b.setObjectName(name)
@@ -343,6 +344,16 @@ def _build():
                 self._warn(str(exc)); return
             self._reopen(dest)
             self.views.setCurrentIndex(1)
+
+        def copy_prediction_id(self):
+            if not self.data:
+                return
+            pid, label, _ = self._selected_prediction()
+            if not pid:
+                self._warn("Select a prediction in the Predictions tab first."); return
+            QApplication.clipboard().setText(pid)
+            self._warn(f"Copied the id for “{label}” to the clipboard:\n{pid}",
+                       icon=QMessageBox.Icon.Information, title="Prediction id copied")
 
         def remove_prediction(self):
             if not self.data:
