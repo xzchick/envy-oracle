@@ -1,0 +1,210 @@
+"""Core Oracle tests: encrypted oracles, predictions, resolution, the calibration
+score (Brier, accuracy, confidence bands), the event journal and its hash chain,
+revision-preserving saves, export and the no-overwrite guarantee.
+"""
+
+import datetime
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from envy_oracle import core
+from envy_oracle.core import OracleError
+
+UTC = datetime.timezone.utc
+
+
+class OracleTest(unittest.TestCase):
+    SECRET = b"a long private oracle passphrase"
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="envy-oracle-"))
+        self.addCleanup(__import__("shutil").rmtree, self.dir)
+        self.base = datetime.datetime(2026, 1, 1, tzinfo=UTC)
+        self._n = 0
+
+    def seq(self):
+        self._n += 1
+        return self.dir / f"o.r{self._n}.envyoracle"
+
+    def oracle(self, name="o.envyoracle", title="Forecasts"):
+        path = self.dir / name
+        core.create(path, title, self.SECRET)
+        return path
+
+    # ----- envelope / create -------------------------------------------
+    def test_encrypted_round_trip_and_magic(self):
+        blob = core.encrypt_bytes(b"x", self.SECRET)
+        self.assertEqual(blob[:11], b"ENVYVAULT2\x00")
+        self.assertEqual(core.decrypt_bytes(blob, self.SECRET), b"x")
+
+    def test_create_empty_oracle(self):
+        path = self.oracle(title="2026 bets")
+        data, _ = core._load(path, self.SECRET)
+        self.assertEqual(data["revision"], 0)
+        self.assertEqual(data["predictions"], [])
+
+    def test_short_passphrase_rejected(self):
+        with self.assertRaises(OracleError):
+            core.create(self.dir / "s", "t", b"short")
+
+    # ----- predictions -------------------------------------------------
+    def test_add_prediction_preserves_revision_and_logs(self):
+        p0 = self.oracle()
+        p1 = self.seq()
+        res = core.add_prediction(p0, p1, self.SECRET, "Ship by Friday", 70)
+        self.assertEqual(res["revision"], 1)
+        self.assertTrue(p0.exists(), "previous revision preserved")
+        data, _ = core._load(p1, self.SECRET)
+        self.assertEqual(len(data["predictions"]), 1)
+        self.assertEqual(data["predictions"][0]["confidence"], 70)
+        self.assertFalse(data["predictions"][0]["resolved"])
+        self.assertEqual(data["journal"][0]["kind"], "created")
+
+    def test_confidence_bounds(self):
+        p0 = self.oracle()
+        for bad in (0, 100, -5):
+            with self.assertRaises(OracleError):
+                core.add_prediction(p0, self.seq(), self.SECRET, "x", bad)
+
+    def test_resolve_sets_outcome_and_chains(self):
+        p0 = self.oracle()
+        p1 = self.seq()
+        pid = core.add_prediction(p0, p1, self.SECRET, "It rains", 60)["prediction_id"]
+        p2 = self.seq()
+        core.resolve(p1, p2, self.SECRET, pid, True, note="it did")
+        data, _ = core._load(p2, self.SECRET)
+        pred = data["predictions"][0]
+        self.assertTrue(pred["resolved"])
+        self.assertIs(pred["outcome"], True)
+        self.assertEqual(data["journal"][1]["kind"], "resolved")
+        self.assertEqual(data["journal"][1]["previous_sha256"], data["journal"][0]["record_sha256"])
+
+    def test_cannot_resolve_twice(self):
+        p0 = self.oracle()
+        p1 = self.seq()
+        pid = core.add_prediction(p0, p1, self.SECRET, "x", 50)["prediction_id"]
+        p2 = self.seq()
+        core.resolve(p1, p2, self.SECRET, pid, True)
+        with self.assertRaises(OracleError):
+            core.resolve(p2, self.seq(), self.SECRET, pid, False)
+
+    def test_remove_keeps_journal(self):
+        p0 = self.oracle()
+        p1 = self.seq()
+        pid = core.add_prediction(p0, p1, self.SECRET, "x", 50)["prediction_id"]
+        p2 = self.seq()
+        core.remove_prediction(p1, p2, self.SECRET, pid)
+        data, _ = core._load(p2, self.SECRET)
+        self.assertEqual(data["predictions"], [])
+        self.assertEqual([e["kind"] for e in data["journal"]], ["created", "removed"])
+
+    # ----- scoring -----------------------------------------------------
+    def _resolved_oracle(self, outcomes):
+        """outcomes: list of (confidence, outcome_bool). Returns the final oracle path."""
+        p = self.oracle()
+        for i, (conf, out) in enumerate(outcomes):
+            d = self.seq()
+            pid = core.add_prediction(p, d, self.SECRET, f"pred {i}", conf)["prediction_id"]
+            p = d
+            d = self.seq()
+            core.resolve(p, d, self.SECRET, pid, out)
+            p = d
+        return p
+
+    def test_brier_and_accuracy(self):
+        # Two predictions: 100%-ish is not allowed, use 90% yes (true) and 20% (false).
+        p = self._resolved_oracle([(90, True), (20, False)])
+        rep = core.score(p, self.SECRET)
+        self.assertEqual(rep["resolved"], 2)
+        self.assertEqual(rep["correct"], 2)          # 90%->yes correct, 20%->no correct
+        self.assertEqual(rep["accuracy_pct"], 100.0)
+        # Brier = mean((.9-1)^2, (.2-0)^2) = mean(.01, .04) = .025
+        self.assertAlmostEqual(rep["brier"], 0.025, places=4)
+
+    def test_calibration_bands(self):
+        # Three 70% predictions, two true -> band 70-79 actual ~66.7%.
+        p = self._resolved_oracle([(70, True), (70, True), (70, False)])
+        rep = core.score(p, self.SECRET)
+        band = [b for b in rep["bins"] if b["band"] == "70–79%"][0]
+        self.assertEqual(band["count"], 3)
+        self.assertEqual(band["you_said"], 70.0)
+        self.assertAlmostEqual(band["actual"], 66.7, places=1)
+
+    def test_open_and_overdue_states(self):
+        p0 = self.oracle()
+        p1 = self.seq()
+        past = (self.base - datetime.timedelta(days=1)).isoformat()
+        core.add_prediction(p0, p1, self.SECRET, "overdue one", 60, due_utc=past)
+        p2 = self.seq()
+        future = (self.base + datetime.timedelta(days=365)).isoformat()
+        core.add_prediction(p1, p2, self.SECRET, "open one", 60, due_utc=future)
+        rep = core.score(p2, self.SECRET, now=self.base.isoformat())
+        self.assertEqual(rep["open"], 2)
+        self.assertEqual(rep["overdue"], 1)
+        self.assertEqual(rep["predictions"][0]["state"], "overdue")  # overdue sorts first
+
+    def test_no_resolved_predictions_scores_none(self):
+        p0 = self.oracle()
+        p1 = self.seq()
+        core.add_prediction(p0, p1, self.SECRET, "someday", 55)
+        rep = core.score(p1, self.SECRET)
+        self.assertIsNone(rep["brier"])
+        self.assertIsNone(rep["accuracy_pct"])
+        self.assertEqual(rep["bins"], [])
+
+    def test_tampered_journal_breaks_chain(self):
+        p0 = self.oracle()
+        p1 = self.seq()
+        core.add_prediction(p0, p1, self.SECRET, "x", 50)
+        data, _ = core._load(p1, self.SECRET)
+        data["journal"][0]["detail"] = "forged"      # tamper without re-hashing
+        forged = self.dir / "forged.envyoracle"
+        forged.write_bytes(core.encrypt_bytes(core._canonical(data), self.SECRET))
+        with self.assertRaises(OracleError):
+            core.inspect(forged, self.SECRET)
+
+    # ----- export -------------------------------------------------------
+    def test_export_html_and_json(self):
+        p = self._resolved_oracle([(80, True), (30, False)])
+        html_out = self.dir / "r.html"
+        res = core.export(p, html_out, self.SECRET, "html")
+        text = html_out.read_text()
+        self.assertIn("Content-Security-Policy", text)
+        self.assertIn("Brier", text)
+        self.assertEqual(res["resolved"], 2)
+        json_out = self.dir / "r.json"
+        core.export(p, json_out, self.SECRET, "json")
+        report = json.loads(json_out.read_text())
+        self.assertIn("limitations", report)
+        self.assertEqual(report["resolved"], 2)
+
+    def test_export_escapes_markup_in_statement(self):
+        p0 = self.oracle()
+        p1 = self.seq()
+        core.add_prediction(p0, p1, self.SECRET, "<script>alert(1)</script> happens", 60)
+        out = self.dir / "r.html"
+        core.export(p1, out, self.SECRET, "html")
+        body = out.read_text().split("<style>")[1]
+        self.assertNotIn("<script>alert", body)
+        self.assertIn("&lt;script&gt;", body)
+
+    # ----- no overwrite -------------------------------------------------
+    def test_new_file_never_overwrites(self):
+        keep = self.dir / "keep"
+        keep.write_bytes(b"precious")
+        with self.assertRaises(OracleError):
+            core.new_file(keep, b"clobber")
+        self.assertEqual(keep.read_bytes(), b"precious")
+
+    def test_add_refuses_to_overwrite(self):
+        p0 = self.oracle()
+        dest = self.dir / "exists.envyoracle"; dest.write_bytes(b"keep me")
+        with self.assertRaises(OracleError):
+            core.add_prediction(p0, dest, self.SECRET, "x", 50)
+        self.assertEqual(dest.read_bytes(), b"keep me")
+
+
+if __name__ == "__main__":
+    unittest.main()

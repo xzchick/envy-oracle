@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "envy-oracle"
+version = "0.1.0"
+description = "ENVY Oracle: encrypted forecasts and calibration scoring — hold yourself to your predictions, in a native app window"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "cryptography>=42,<47",
+  "PyQt6>=6.7,<7",
+]
+
+[project.scripts]
+envy-oracle = "envy_oracle.cli:main"
+
+[project.gui-scripts]
+envy-oracle-gui = "envy_oracle.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["envy_oracle*"]
