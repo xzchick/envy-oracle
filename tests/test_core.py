@@ -261,6 +261,36 @@ class OracleTest(unittest.TestCase):
         data, _ = core._load(src, self.SECRET)
         return data["predictions"][-1]["id"]
 
+    # ----- calibration reliability diagram (v0.2) ----------------------
+    def test_calibration_svg_is_well_formed_with_a_point_per_band(self):
+        import xml.etree.ElementTree as ET
+        bins = [{"band": "80–89%", "count": 2, "you_said": 80.0, "actual": 100.0, "gap": 20.0},
+                {"band": "30–39%", "count": 1, "you_said": 30.0, "actual": 0.0, "gap": -30.0}]
+        svg = core._calibration_svg(bins)
+        self.assertTrue(svg.startswith("<svg"))
+        root = ET.fromstring(svg)                                  # must be valid XML
+        circles = root.findall(".//{http://www.w3.org/2000/svg}circle")
+        self.assertEqual(len(circles), 2)
+
+    def test_export_html_includes_reliability_diagram_when_resolved(self):
+        p = self.oracle()
+        p = self._add(p, "ships Q1", 80)
+        pid = self._last_id(p)
+        p2 = self.seq(); core.resolve(p, p2, self.SECRET, pid, True)
+        out = self.dir / "r.html"
+        core.export(p2, out, self.SECRET, "html")
+        text = out.read_text()
+        self.assertIn("Reliability diagram", text)
+        self.assertIn("<svg", text)
+        self.assertIn("stated confidence", text)
+
+    def test_export_html_omits_diagram_when_nothing_resolved(self):
+        p = self.oracle()
+        p = self._add(p, "ships later", 60)            # open, no bins
+        out = self.dir / "r2.html"
+        core.export(p, out, self.SECRET, "html")
+        self.assertNotIn("Reliability diagram", out.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()
