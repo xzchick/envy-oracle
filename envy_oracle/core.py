@@ -476,6 +476,44 @@ def inspect(source, secret):
 
 # --- Plaintext export --------------------------------------------------------
 
+def _calibration_svg(bins):
+    """An inline SVG reliability diagram: stated confidence (x) against the actual
+    rate things came true (y). The dashed diagonal is perfect calibration; a point
+    above it means you were under-confident, below it over-confident. Point area
+    grows with how many predictions fall in that band. No script — it renders under
+    the export's strict Content-Security-Policy."""
+    w = h = 280
+    pad = 38
+    span = w - 2 * pad
+
+    def sx(v):
+        return pad + span * (v / 100.0)
+
+    def sy(v):
+        return h - pad - span * (v / 100.0)
+
+    maxn = max((b["count"] for b in bins), default=1) or 1
+    points = "".join(
+        f'<circle cx="{sx(b["you_said"]):.1f}" cy="{sy(b["actual"]):.1f}" '
+        f'r="{3 + 7 * (b["count"] / maxn):.1f}" fill="#ff3db4" fill-opacity="0.72" stroke="#8547e8"/>'
+        for b in bins)
+    ticks = "".join(
+        f'<text x="{sx(v):.1f}" y="{h - pad + 15}" font-size="10" text-anchor="middle" fill="#666">{v}</text>'
+        f'<text x="{pad - 8}" y="{sy(v) + 4:.1f}" font-size="10" text-anchor="end" fill="#666">{v}</text>'
+        for v in (0, 50, 100))
+    return (
+        f'<svg viewBox="0 0 {w} {h}" width="340" xmlns="http://www.w3.org/2000/svg" '
+        f'role="img" aria-label="Calibration reliability diagram: stated confidence versus actual rate">'
+        f'<rect x="0" y="0" width="{w}" height="{h}" fill="#ffffff" stroke="#ccc"/>'
+        f'<line x1="{pad}" y1="{h - pad}" x2="{w - pad}" y2="{pad}" stroke="#8547e8" stroke-dasharray="5 4"/>'
+        f'<line x1="{pad}" y1="{h - pad}" x2="{w - pad}" y2="{h - pad}" stroke="#333"/>'
+        f'<line x1="{pad}" y1="{h - pad}" x2="{pad}" y2="{pad}" stroke="#333"/>'
+        f'{ticks}{points}'
+        f'<text x="{w / 2:.0f}" y="{h - 6}" font-size="11" text-anchor="middle" fill="#444">stated confidence %</text>'
+        f'<text x="12" y="{h / 2:.0f}" font-size="11" text-anchor="middle" fill="#444" '
+        f'transform="rotate(-90 12 {h / 2:.0f})">actual %</text></svg>')
+
+
 def export(source, destination, secret, format="html", now=None):
     if format not in ("html", "json"):
         raise OracleError("Export format must be html or json")
@@ -508,6 +546,8 @@ def export(source, destination, secret, format="html", now=None):
         cal = "".join(
             "<tr><td>" + esc(b["band"]) + "</td><td>" + esc(b["count"]) + "</td><td>" + esc(b["you_said"]) +
             "%</td><td>" + esc(b["actual"]) + "%</td><td>" + esc(b["gap"]) + "</td></tr>" for b in report["bins"])
+        chart = ("<h3>Reliability diagram</h3><p>" + _calibration_svg(report["bins"]) +
+                 "</p>") if report["bins"] else ""
         headline = ("No resolved predictions yet — nothing to score."
                     if report["brier"] is None else
                     f"{report['resolved']} resolved · {report['accuracy_pct']}% accurate · "
@@ -525,6 +565,7 @@ def export(source, destination, secret, format="html", now=None):
                   "<h3>Calibration by confidence band</h3>"
                   "<table><thead><tr><th>Band</th><th>Predictions</th><th>You said</th><th>Actual</th><th>Gap</th></tr></thead><tbody>"
                   + (cal or "<tr><td colspan=\"5\">No resolved predictions yet.</td></tr>") + "</tbody></table>"
+                  + chart +
                   "<h3>Predictions (" + str(report["total"]) + ")</h3>"
                   "<table><thead><tr><th>State</th><th>Statement</th><th>Confidence</th><th>Due</th><th>Outcome</th></tr></thead><tbody>"
                   + rows + "</tbody></table></body></html>").encode("utf-8")
