@@ -27,7 +27,7 @@ AES-256-GCM encrypted oracles, a SHA-256 hash-chained event journal, revision-pr
 </p>
 
 <p align="center">
-  <img src="assets/readme/window.png" width="90%" alt="The Oracle window: a predictions table coloured by state — overdue, open, correct and wrong — each with its confidence and outcome, in the ENVY neon theme" />
+  <img src="assets/readme/demo.gif" width="90%" alt="The Oracle window: a predictions table coloured by state — overdue, open, correct and wrong — each with its confidence and outcome, in the ENVY neon theme" />
 </p>
 
 <p align="center"><sub>A real native window — not a browser view. The wordmark pulses, a four-point star turns in the header, and a light travels the accent bar.</sub></p>
