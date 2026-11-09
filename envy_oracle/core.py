@@ -539,8 +539,8 @@ def _calibration_svg(bins):
 
 
 def export(source, destination, secret, format="html", now=None):
-    if format not in ("html", "json"):
-        raise OracleError("Export format must be html or json")
+    if format not in ("html", "json", "md"):
+        raise OracleError("Export format must be html, json or md")
     data, envelope = _load(source, secret)
     report = score(source, secret, now)
     out = {"oracle": {"oracle_id": data["oracle_id"], "title": data["title"], "revision": data["revision"],
@@ -554,6 +554,39 @@ def export(source, destination, secret, format="html", now=None):
                           "predictions, and times are assertions from the operator's clock."}
     if format == "json":
         output = (json.dumps(out, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    elif format == "md":
+        def cell(value):
+            return str(value).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+
+        def md_outcome(p):
+            if not p["resolved"]:
+                return "overdue" if p["state"] == "overdue" else "open"
+            return ("yes" if p["outcome"] else "no") + (" ✓" if p["state"] == "correct" else " ✗")
+
+        headline = ("No resolved predictions yet — nothing to score." if report["brier"] is None else
+                    f"{report['resolved']} resolved · {report['accuracy_pct']}% accurate · "
+                    f"Brier {report['brier']} (0.25 = always 50%)")
+        lines = [f"# {data['title']}", "", out["limitations"], "",
+                 f"- **Oracle:** `{data['oracle_id']}`",
+                 f"- **Revision:** {data['revision']}",
+                 f"- **Evaluated:** {report['evaluated_utc']}",
+                 f"- {headline}", "",
+                 "## Calibration by confidence band", ""]
+        if report["bins"]:
+            lines += ["| Band | Predictions | You said | Actual | Gap |", "| --- | --- | --- | --- | --- |"]
+            for b in report["bins"]:
+                lines.append(f"| {b['band']} | {b['count']} | {b['you_said']}% | {b['actual']}% | {b['gap']:+} |")
+        else:
+            lines.append("_No resolved predictions yet._")
+        lines += ["", f"## Predictions ({report['total']})", ""]
+        if report["predictions"]:
+            lines += ["| State | Statement | Confidence | Due | Outcome |", "| --- | --- | --- | --- | --- |"]
+            for p in report["predictions"]:
+                lines.append(f"| {p['state']} | {cell(p['statement'])} | {p['confidence']}% | "
+                             f"{p['due_utc'] or '—'} | {md_outcome(p)} |")
+        else:
+            lines.append("_No predictions yet._")
+        output = ("\n".join(lines) + "\n").encode("utf-8")
     else:
         def esc(v):
             return html.escape(str(v), quote=True)
