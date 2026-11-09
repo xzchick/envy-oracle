@@ -314,6 +314,21 @@ class OracleTest(unittest.TestCase):
         core.export(p, out, self.SECRET, "html")
         self.assertNotIn("Reliability diagram", out.read_text())
 
+    def test_export_markdown(self):
+        p = self.oracle(title="2026 bets")
+        p = self._add(p, "ships Q1", 80)
+        pid = self._last_id(p)
+        p2 = self.seq(); core.resolve(p, p2, self.SECRET, pid, True)
+        out = self.dir / "r.md"
+        res = core.export(p2, out, self.SECRET, "md")
+        self.assertEqual(res["format"], "md")
+        text = out.read_text()
+        self.assertTrue(text.startswith("# 2026 bets"))
+        self.assertIn("## Calibration by confidence band", text)
+        self.assertIn("## Predictions (1)", text)
+        self.assertIn("ships Q1", text)
+        self.assertIn("| Band | Predictions |", text)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     exp = commands.add_parser("export", help="write a plaintext HTML or JSON calibration report")
     exp.add_argument("oracle")
     exp.add_argument("destination", help="a new report file; never overwritten")
-    exp.add_argument("--format", default="html", choices=("html", "json"))
+    exp.add_argument("--format", default="html", choices=("html", "json", "md"))
     return root
 
 
