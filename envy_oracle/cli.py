@@ -115,6 +115,11 @@ def _run(args) -> int:
             for b in rep["bins"]:
                 print(f"  {b['band']:>7}: {b['count']} preds · you said {b['you_said']}% · "
                       f"actual {b['actual']}% · gap {b['gap']:+}")
+            d = rep.get("brier_decomposition")
+            if d:
+                print(f"  Brier = reliability {d['reliability']} − resolution {d['resolution']} "
+                      f"+ uncertainty {d['uncertainty']} (base rate {d['base_rate_pct']}%)")
+                print("    lower reliability = better calibrated · higher resolution = better discrimination")
         print(f"{rep['open']} open ({rep['overdue']} overdue)")
         return 0 if rep["overdue"] == 0 else 1
     if args.command == "due":
