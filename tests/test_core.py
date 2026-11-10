@@ -132,6 +132,32 @@ class OracleTest(unittest.TestCase):
         self.assertEqual(band["you_said"], 70.0)
         self.assertAlmostEqual(band["actual"], 66.7, places=1)
 
+    def test_brier_decomposition_identity_and_none(self):
+        # No resolved predictions -> no decomposition.
+        empty = self.oracle(name="empty.envyoracle")
+        self.assertIsNone(core.score(empty, self.SECRET)["brier_decomposition"])
+        # A spread of confidences and outcomes; the three terms must recompose the Brier.
+        p = self._resolved_oracle([(90, True), (90, False), (70, True), (70, True),
+                                    (30, False), (30, False), (20, True)])
+        rep = core.score(p, self.SECRET)
+        d = rep["brier_decomposition"]
+        # Murphy identity: Brier == reliability - resolution + uncertainty (exact here).
+        self.assertAlmostEqual(d["recomposed_brier"], rep["brier"], places=4)
+        self.assertAlmostEqual(d["reliability"] - d["resolution"] + d["uncertainty"],
+                               rep["brier"], places=4)
+        # Perfect reliability: at 70% confidence, exactly 70%... use a clean case.
+        # 2 of 2 true at 50% is miscalibrated (said 50, got 100) -> reliability > 0.
+        for term in ("reliability", "resolution", "uncertainty"):
+            self.assertGreaterEqual(d[term], 0.0)
+
+    def test_brier_decomposition_perfect_calibration(self):
+        # Ten 50% predictions, exactly five true: observed freq == stated 50% -> reliability 0.
+        p = self._resolved_oracle([(50, True)] * 5 + [(50, False)] * 5)
+        d = core.score(p, self.SECRET)["brier_decomposition"]
+        self.assertAlmostEqual(d["reliability"], 0.0, places=4)
+        # No discrimination (one confidence level) -> resolution 0, Brier == uncertainty.
+        self.assertAlmostEqual(d["resolution"], 0.0, places=4)
+
     def test_open_and_overdue_states(self):
         p0 = self.oracle()
         p1 = self.seq()

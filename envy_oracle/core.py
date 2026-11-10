@@ -383,6 +383,51 @@ def _is_correct(confidence, outcome):
     return (confidence >= 50) == bool(outcome)
 
 
+def _brier_decomposition(resolved):
+    """Murphy's three-term decomposition of the Brier score over resolved predictions.
+
+    Forecasts are grouped by their exact stated confidence (not the display deciles),
+    so every forecast within a group is identical and the identity
+
+        Brier = reliability - resolution + uncertainty
+
+    holds exactly. Returns None when nothing is resolved.
+
+    - **reliability** (lower is better): how far your stated confidence sits from the
+      outcome frequency at that confidence — pure calibration error.
+    - **resolution** (higher is better): how much your confidence levels separate
+      outcomes from the overall base rate — your power to discriminate.
+    - **uncertainty**: the base-rate variance of the outcomes themselves, which no
+      forecaster can reduce; it is a property of what you chose to predict, not of you.
+    """
+    if not resolved:
+        return None
+    n = len(resolved)
+    base_rate = sum(1 for p in resolved if p["outcome"]) / n
+    groups = {}
+    for p in resolved:
+        g = groups.setdefault(p["confidence"], {"n": 0, "yes": 0})
+        g["n"] += 1
+        g["yes"] += 1 if p["outcome"] else 0
+    reliability = resolution = 0.0
+    for conf, g in groups.items():
+        forecast = conf / 100.0
+        observed = g["yes"] / g["n"]
+        reliability += g["n"] * (forecast - observed) ** 2
+        resolution += g["n"] * (observed - base_rate) ** 2
+    reliability /= n
+    resolution /= n
+    uncertainty = base_rate * (1.0 - base_rate)
+    return {"reliability": round(reliability, 4), "resolution": round(resolution, 4),
+            "uncertainty": round(uncertainty, 4), "base_rate_pct": round(100.0 * base_rate, 1),
+            "recomposed_brier": round(reliability - resolution + uncertainty, 4),
+            "note": "Brier = reliability − resolution + uncertainty. Reliability is your "
+                    "calibration error (lower is better); resolution is how well your "
+                    "confidence separates outcomes (higher is better); uncertainty is the "
+                    "base-rate variance of what you chose to predict, which no forecaster "
+                    "can lower."}
+
+
 def score(source, secret, now=None, tag=None):
     """Measure calibration over resolved predictions. Read-only.
 
@@ -429,6 +474,7 @@ def score(source, secret, now=None, tag=None):
             "evaluated_utc": moment.isoformat(), "tag": tag,
             "total": len(preds), "resolved": len(resolved), "open": len(open_preds),
             "overdue": len(overdue), "correct": correct, "accuracy_pct": accuracy, "brier": brier,
+            "brier_decomposition": _brier_decomposition(resolved),
             "bins": bins, "predictions": _rows(preds, moment),
             "basis": "The Oracle scores the confidence you stated against the outcomes you resolved — it does "
                      "not foretell anything. Calibration needs volume to mean much, and you resolve your own "
@@ -547,7 +593,8 @@ def export(source, destination, secret, format="html", now=None):
                       "created_utc": data["created_utc"]},
            "evaluated_utc": report["evaluated_utc"], "total": report["total"], "resolved": report["resolved"],
            "open": report["open"], "overdue": report["overdue"], "correct": report["correct"],
-           "accuracy_pct": report["accuracy_pct"], "brier": report["brier"], "bins": report["bins"],
+           "accuracy_pct": report["accuracy_pct"], "brier": report["brier"],
+           "brier_decomposition": report["brier_decomposition"], "bins": report["bins"],
            "predictions": report["predictions"], "envelope_sha256": envelope,
            "limitations": "Plaintext export. The Oracle scores stated confidence against resolved outcomes "
                           "only; it does not foretell anything, calibration needs volume, you resolve your own "
